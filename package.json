@@ -18,7 +18,8 @@
     "activationEvents": [],
     "main": "./out/extension.js",
     "contributes": {
-        "commands": [{
+        "commands": [
+            {
                 "command": "vscode-hugo-runner.hugoInstall",
                 "title": "Hugo Runner: Install Hugo"
             },
@@ -65,11 +66,13 @@
             }
         },
         "views": {
-            "explorer": [{
-                "type": "webview",
-                "id": "vscode-hugo-runner.hugoRunner",
-                "name": "Hugo Runner"
-            }]
+            "explorer": [
+                {
+                    "type": "webview",
+                    "id": "vscode-hugo-runner.hugoRunner",
+                    "name": "Hugo Runner"
+                }
+            ]
         }
     },
     "scripts": {
@@ -90,11 +93,5 @@
         "@vscode/test-electron": "^2.4.0",
         "eslint": "^8.57.0",
         "typescript": "^5.4.5"
-    },
-    "extensionDependencies": [
-        "mindaro-dev.file-downloader"
-    ],
-    "dependencies": {
-        "@microsoft/vscode-file-downloader-api": "^1.0.1"
     }
 }
