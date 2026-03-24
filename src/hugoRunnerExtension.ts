@@ -1,6 +1,7 @@
-import { getApi, FileDownloader } from "@microsoft/vscode-file-downloader-api";
 import * as childProcess from "child_process";
-import { get } from "http";
+import * as fs from "fs";
+import * as https from "https";
+import * as http from "http";
 import * as path from "path";
 import * as vscode from "vscode";
 
@@ -49,7 +50,7 @@ export class HugoRunnerExtension extends EventTarget {
 		}
 
 		this.outputChannel.appendLine('Ensuring local folder exists...');
-		vscode.workspace.fs.createDirectory(this.context.globalStorageUri);
+		fs.mkdirSync(this.context.globalStorageUri.fsPath, { recursive: true });
 
 		this.outputChannel.appendLine('Determining latest version...');
 		const response = await fetch('https://github.com/gohugoio/hugo/releases/latest');
@@ -60,28 +61,31 @@ export class HugoRunnerExtension extends EventTarget {
 
 		// TODO: handle non-amd64 processor!
 		const platform = this.getHugoPlatformString();
-		const extension = platform === 'windows' ? 'zip' : 'tar.gz';
-		const downloadUrl = `https://github.com/gohugoio/hugo/releases/download/v${latestVersion}/hugo_extended_${latestVersion}_${platform}-amd64.${extension}`;
-		const filename = platform === 'windows' ? 'hugo' : 'hugo.tar.gz'; // folder name for windows, tar.gz for others
+		const archiveExt = platform === 'windows' ? 'zip' : 'tar.gz';
+		const downloadUrl = `https://github.com/gohugoio/hugo/releases/download/v${latestVersion}/hugo_extended_${latestVersion}_${platform}-amd64.${archiveExt}`;
 
 		this.outputChannel.appendLine(`Downloading version ${latestVersion}... (from ${downloadUrl})`);
 
-		const fileDownloader: FileDownloader = await getApi();
-		const directory = await fileDownloader.downloadFile(
-			vscode.Uri.parse(downloadUrl),
-			filename,
-			this.context,
-			undefined,
-			undefined,
-			{ shouldUnzip: platform === 'windows' }
-		);
+		const archivePath = path.join(this.context.globalStorageUri.fsPath, `hugo.${archiveExt}`);
+		const hugoDir = path.join(this.context.globalStorageUri.fsPath, 'hugo');
 
-		// file downloader auto-unzips on windows
-		// on other platforms, extract from tar.gz
-		if (platform !== 'windows') {
-			const tarPath = path.join(directory.fsPath);
-			const outputPath = path.join(directory.fsPath, '../hugo');
-			childProcess.execSync(`rm -rf "${outputPath}" && mkdir -p "${outputPath}" && tar -xzf "${tarPath}" -C "${outputPath}"`);
+		await this.downloadFile(downloadUrl, archivePath);
+
+		try {
+			fs.rmSync(hugoDir, { recursive: true, force: true });
+			fs.mkdirSync(hugoDir, { recursive: true });
+			if (platform === 'windows') {
+				childProcess.execFileSync('powershell.exe', [
+					'-NoProfile', '-Command',
+					`Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' -DestinationPath '${hugoDir.replace(/'/g, "''")}'`
+				]);
+			} else {
+				childProcess.execFileSync('tar', ['-xzf', archivePath, '-C', hugoDir]);
+			}
+		} finally {
+			if (fs.existsSync(archivePath)) {
+				fs.unlinkSync(archivePath);
+			}
 		}
 
 		this.outputChannel.appendLine('Checking that we can run hugo...');
@@ -117,9 +121,10 @@ export class HugoRunnerExtension extends EventTarget {
 			return hugoPath;
 		}
 
-		const fileDownloader: FileDownloader = await getApi();
-		const hugoItem = await fileDownloader.tryGetItem("hugo", this.context);
-		if (hugoItem === undefined) {
+		const exeName = process.platform === 'win32' ? 'hugo.exe' : 'hugo';
+		const hugoBinPath = path.join(this.context.globalStorageUri.fsPath, 'hugo', exeName);
+
+		if (!fs.existsSync(hugoBinPath)) {
 			if (options?.allowInstallation) {
 				const result = await vscode.window.showQuickPick(['Yes', 'No'], { placeHolder: `Couldn't find Hugo - do you want to install it?` });
 				if (result === 'Yes') {
@@ -135,9 +140,34 @@ export class HugoRunnerExtension extends EventTarget {
 			}
 		}
 
-		const exeName = process.platform === 'win32' ? 'hugo.exe' : 'hugo';
+		return hugoBinPath;
+	}
 
-		return path.join(hugoItem.fsPath, exeName);
+	private downloadFile(url: string, destPath: string): Promise<void> {
+		return new Promise((resolve, reject) => {
+			const attempt = (attemptUrl: string) => {
+				const mod = attemptUrl.startsWith('https') ? https : http;
+				mod.get(attemptUrl, (res) => {
+					const { statusCode, headers } = res;
+					if ((statusCode === 301 || statusCode === 302 || statusCode === 307 || statusCode === 308) && headers.location) {
+						res.resume();
+						attempt(headers.location);
+						return;
+					}
+					if (statusCode !== 200) {
+						res.resume();
+						reject(new Error(`Failed to download ${attemptUrl}: HTTP ${statusCode}`));
+						return;
+					}
+					const file = fs.createWriteStream(destPath);
+					res.pipe(file);
+					file.on('finish', () => file.close(() => resolve()));
+					file.on('error', (err) => { fs.unlink(destPath, () => {}); reject(err); });
+					res.on('error', (err) => { fs.unlink(destPath, () => {}); reject(err); });
+				}).on('error', reject);
+			};
+			attempt(url);
+		});
 	}
 
 	getDefaultHugoOptions() {
